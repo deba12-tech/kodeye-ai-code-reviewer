@@ -1,0 +1,107 @@
+version: '3.8'
+
+services:
+  # ========================================================================
+  # PostgreSQL Database
+  # ========================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: kodeye-db
+    environment:
+      POSTGRES_DB: kodeye
+      POSTGRES_USER: kodeye_user
+      POSTGRES_PASSWORD: kodeye_password_dev
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kodeye_user -d kodeye"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kodeye-network
+
+  # ========================================================================
+  # Backend Service
+  # ========================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: kodeye-backend
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql://kodeye_user:kodeye_password_dev@postgres:5432/kodeye
+      DEBUG: "true"
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3000,http://localhost
+      FRONTEND_URL: http://localhost:5173
+      JWT_SECRET_KEY: dev-secret-key-not-for-production
+      LOG_LEVEL: DEBUG
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - kodeye-network
+    command: >
+      bash -c "
+        alembic upgrade head &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+
+  # ========================================================================
+  # Frontend Service
+  # ========================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: frontend
+    container_name: kodeye-frontend
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "5173:3000"
+    depends_on:
+      - backend
+    networks:
+      - kodeye-network
+
+  # ========================================================================
+  # Redis (for caching and rate limiting - optional)
+  # ========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: kodeye-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kodeye-network
+
+# ============================================================================
+# Volumes
+# ============================================================================
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  kodeye-network:
+    driver: bridge

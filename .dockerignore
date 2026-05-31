@@ -1,0 +1,22 @@
+# Docker build context ignore
+__pycache__
+*.pyc
+*.pyo
+.git
+.gitignore
+.dockerignore
+.env
+.env.local
+.env.production
+docker-compose*.yml
+Dockerfile
+.vscode
+.idea
+*.md
+!README.md
+.pytest_cache
+htmlcov
+.coverage
+node_modules
+npm-debug.log
+.DS_Store
