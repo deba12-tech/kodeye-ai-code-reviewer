@@ -1,14 +1,15 @@
-import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
-from dotenv import load_dotenv
 
-load_dotenv()
+from app.core.config import settings
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./kodeye.db")
+DATABASE_URL = settings.DATABASE_URL
 
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+if settings.ENVIRONMENT == "production" and not DATABASE_URL.startswith("postgresql"):
+    raise RuntimeError("DATABASE_URL must be set to a valid PostgreSQL URL in production")
 
 def get_engine_and_session(url):
     connect_args = {}
@@ -24,6 +25,8 @@ def get_engine_and_session(url):
             print(f"Successfully connected to PostgreSQL: {url.split('@')[-1]}")
             return eng, sessionmaker(autocommit=False, autoflush=False, bind=eng)
         except Exception as e:
+            if settings.ENVIRONMENT == "production":
+                raise RuntimeError("DATABASE_URL must be set to a valid PostgreSQL URL in production") from e
             print(f"Warning: Connection to PostgreSQL failed ({e}). Falling back to local SQLite.")
             
     fallback_url = "sqlite:///./kodeye.db"
@@ -41,4 +44,3 @@ def get_db():
         yield db
     finally:
         db.close()
-

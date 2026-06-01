@@ -4,6 +4,7 @@ Catches all exceptions and returns user-friendly error responses.
 """
 
 import traceback
+import uuid
 from typing import Callable
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
@@ -145,14 +146,14 @@ def setup_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def general_exception_handler(request: Request, exc: Exception):
         """Handle all unhandled exceptions."""
-        error_id = logger.bind_contextvars(
-            exc_type=type(exc).__name__,
-            path=request.url.path,
-            method=request.method,
-        )
+        error_id = str(uuid.uuid4())
         
         logger.error(
             "unhandled_exception",
+            error_id=error_id,
+            exc_type=type(exc).__name__,
+            path=request.url.path,
+            method=request.method,
             error=str(exc),
             traceback=traceback.format_exc(),
         )
@@ -164,7 +165,7 @@ def setup_exception_handlers(app: FastAPI) -> None:
                 "error": {
                     "code": "INTERNAL_SERVER_ERROR",
                     "message": "An unexpected error occurred. Please try again later.",
-                    "details": {},
+                    "details": {"error_id": error_id},
                 },
             },
         )

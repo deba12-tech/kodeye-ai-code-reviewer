@@ -3,6 +3,7 @@ Health check endpoints for monitoring application status.
 """
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.db.database import get_db
 import structlog
@@ -40,7 +41,7 @@ async def readiness_check(db: Session = Depends(get_db)):
         dict: Readiness status with component checks
     """
     try:
-        db.execute("SELECT 1")
+        db.execute(text("SELECT 1"))
         db_status = "ready"
     except Exception as e:
         logger.error("database_readiness_check_failed", error=str(e))

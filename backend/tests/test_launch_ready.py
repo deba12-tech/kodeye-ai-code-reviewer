@@ -349,10 +349,27 @@ def test_production_config_validation_rejects_unsafe_values():
     config = SimpleNamespace(
         ENVIRONMENT="production",
         DEBUG=True,
+        DATABASE_URL="postgresql://user:password@localhost:5432/kodeye",
         JWT_SECRET_KEY="short",
         CORS_ORIGINS_LIST=["*"],
+        ALLOWED_HOSTS_LIST=["localhost"],
         TOKEN_ENCRYPTION_KEY="",
     )
 
     with pytest.raises(ValueError, match="DEBUG must be false"):
+        validate_production_settings(config)
+
+
+def test_production_config_validation_requires_postgres_database_url():
+    config = SimpleNamespace(
+        ENVIRONMENT="production",
+        DEBUG=False,
+        DATABASE_URL="sqlite:///./kodeye.db",
+        JWT_SECRET_KEY="x" * 64,
+        CORS_ORIGINS_LIST=["https://kodeye.vercel.app"],
+        ALLOWED_HOSTS_LIST=["kodeye-backend.onrender.com"],
+        TOKEN_ENCRYPTION_KEY="fernet-key",
+    )
+
+    with pytest.raises(ValueError, match="DATABASE_URL must be set to a valid PostgreSQL URL in production"):
         validate_production_settings(config)

@@ -1,6 +1,10 @@
 """Error handling and authorization tests."""
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from app.middleware.error_handler import setup_exception_handlers
 
 
 @pytest.mark.errors
@@ -50,3 +54,20 @@ class TestNotFound:
         assert client.get("/api/v1/health").status_code == 200
         assert client.get("/api/v1/health/ready").status_code == 200
         assert client.get("/api/v1/health/live").status_code == 200
+
+
+def test_general_exception_handler_does_not_crash():
+    app = FastAPI()
+    setup_exception_handlers(app)
+
+    @app.get("/boom")
+    def boom():
+        raise RuntimeError("boom")
+
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        response = test_client.get("/boom")
+
+    assert response.status_code == 500
+    body = response.json()
+    assert body["error"]["code"] == "INTERNAL_SERVER_ERROR"
+    assert body["error"]["details"]["error_id"]

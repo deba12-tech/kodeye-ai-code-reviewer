@@ -109,6 +109,11 @@ def validate_production_settings(config: Settings) -> None:
     """Fail fast for unsafe production configuration."""
     if config.ENVIRONMENT != "production":
         return
+    database_url = getattr(config, "DATABASE_URL", "")
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
+    if not database_url.startswith("postgresql"):
+        raise ValueError("DATABASE_URL must be set to a valid PostgreSQL URL in production")
     if config.DEBUG:
         raise ValueError("DEBUG must be false in production")
     if not config.JWT_SECRET_KEY or len(config.JWT_SECRET_KEY) < 32 or config.JWT_SECRET_KEY.startswith("kodeye-default"):
