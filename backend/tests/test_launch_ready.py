@@ -3,8 +3,11 @@
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.testclient import TestClient
 
-from app.core.config import validate_production_settings
+from app.core.config import Settings, validate_production_settings
 from app.models.github_integration import GithubIntegration
 from app.models.issue import Issue
 from app.models.oauth_account import OAuthAccount
@@ -373,3 +376,61 @@ def test_production_config_validation_requires_postgres_database_url():
 
     with pytest.raises(ValueError, match="DATABASE_URL must be set to a valid PostgreSQL URL in production"):
         validate_production_settings(config)
+
+
+def test_cors_origins_support_json_and_comma_values(monkeypatch):
+    monkeypatch.setenv("CORS_ORIGINS", '["https://kodeye-ai-code-reviewer.vercel.app/"]')
+    assert Settings().CORS_ORIGINS_LIST == ["https://kodeye-ai-code-reviewer.vercel.app"]
+
+    monkeypatch.setenv(
+        "CORS_ORIGINS",
+        "https://kodeye-ai-code-reviewer.vercel.app/, http://localhost:5173,",
+    )
+    assert Settings().CORS_ORIGINS_LIST == [
+        "https://kodeye-ai-code-reviewer.vercel.app",
+        "http://localhost:5173",
+    ]
+
+
+def test_allowed_hosts_remain_hostnames(monkeypatch):
+    monkeypatch.setenv(
+        "ALLOWED_HOSTS",
+        "localhost, 127.0.0.1, https://kodeye-backend.onrender.com/, *.onrender.com",
+    )
+
+    assert Settings().ALLOWED_HOSTS_LIST == [
+        "localhost",
+        "127.0.0.1",
+        "kodeye-backend.onrender.com",
+        "*.onrender.com",
+    ]
+
+
+def test_cors_preflight_allows_vercel_origin(monkeypatch):
+    monkeypatch.setenv("CORS_ORIGINS", "https://kodeye-ai-code-reviewer.vercel.app")
+    app = FastAPI()
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=Settings().CORS_ORIGINS_LIST,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
+    )
+
+    @app.get("/api/v1/auth/me")
+    def me():
+        return {"ok": True}
+
+    with TestClient(app) as test_client:
+        response = test_client.options(
+            "/api/v1/auth/me",
+            headers={
+                "Origin": "https://kodeye-ai-code-reviewer.vercel.app",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://kodeye-ai-code-reviewer.vercel.app"
+    assert response.headers["access-control-allow-credentials"] == "true"

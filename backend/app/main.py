@@ -60,13 +60,9 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(LoggingMiddleware)
 
 cors_origins = settings.CORS_ORIGINS_LIST
-if settings.DEBUG:
-    logger.info(
-        "cors_configuration",
-        origins=cors_origins,
-        environment=settings.ENVIRONMENT,
-    )
 
+# Keep CORS outermost so browser preflight OPTIONS requests do not reach auth,
+# logging, security, or trusted-host middleware before CORSMiddleware can reply.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
@@ -111,6 +107,7 @@ async def startup_event():
         environment=settings.ENVIRONMENT,
         debug=settings.DEBUG,
     )
+    logger.info("loaded_cors_origins", origins=cors_origins)
 
 
 @app.on_event("shutdown")

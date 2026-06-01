@@ -1,11 +1,39 @@
 import os
-from typing import List
+import json
+from typing import ClassVar, List
 from urllib.parse import urlparse
 from pydantic_settings import BaseSettings
 
 
 def _parse_csv(value: str) -> List[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _parse_env_list(value: str) -> List[str]:
+    """Parse comma-separated or JSON-list env values."""
+    raw_value = value.strip()
+    if not raw_value:
+        return []
+
+    if raw_value.startswith("["):
+        try:
+            parsed = json.loads(raw_value)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+
+    return _parse_csv(raw_value)
+
+
+def _normalize_origin(origin: str) -> str:
+    return origin.strip().rstrip("/")
+
+
+def _normalize_host(host: str) -> str:
+    value = host.strip().rstrip("/")
+    parsed = urlparse(value)
+    return parsed.netloc or parsed.path
 
 
 class Settings(BaseSettings):
@@ -37,19 +65,21 @@ class Settings(BaseSettings):
     
     TOKEN_ENCRYPTION_KEY: str = os.getenv("TOKEN_ENCRYPTION_KEY", "")
     
-    CORS_ORIGINS: List[str] = [
+    DEFAULT_CORS_ORIGINS: ClassVar[List[str]] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:3000",
     ]
+    CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", "")
     
     @property
     def CORS_ORIGINS_LIST(self) -> List[str]:
         """Get CORS origins from environment if set."""
-        env_origins = os.getenv("CORS_ORIGINS", "")
+        env_origins = os.getenv("CORS_ORIGINS", self.CORS_ORIGINS)
         if env_origins:
-            return [origin.strip() for origin in env_origins.split(",")]
-        return self.CORS_ORIGINS
+            origins = [_normalize_origin(origin) for origin in _parse_env_list(env_origins)]
+            return list(dict.fromkeys(origin for origin in origins if origin))
+        return list(dict.fromkeys(_normalize_origin(origin) for origin in self.DEFAULT_CORS_ORIGINS))
     
     EMAIL_BACKEND: str = os.getenv("EMAIL_BACKEND", "console")  # console, smtp, sendgrid
     SMTP_HOST: str = os.getenv("SMTP_HOST", "localhost")
@@ -81,9 +111,12 @@ class Settings(BaseSettings):
     @property
     def ALLOWED_HOSTS_LIST(self) -> List[str]:
         """Get TrustedHostMiddleware hosts from env or safe local defaults."""
-        env_hosts = _parse_csv(os.getenv("ALLOWED_HOSTS", self.ALLOWED_HOSTS))
+        env_hosts = [
+            _normalize_host(host)
+            for host in _parse_env_list(os.getenv("ALLOWED_HOSTS", self.ALLOWED_HOSTS))
+        ]
         if env_hosts:
-            return env_hosts
+            return list(dict.fromkeys(host for host in env_hosts if host))
 
         hosts = ["localhost", "127.0.0.1"]
         if self.ENVIRONMENT in ("test", "development"):
