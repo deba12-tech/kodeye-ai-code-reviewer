@@ -274,7 +274,7 @@ def test_analyze_imported_github_file_saves_source_metadata(client, db_session, 
         json={
             "project_name": "Imported Repo",
             "language": "Python",
-            "code": "print('imported')",
+            "code": "def imported():\n    print('imported')\n    return True",
             "review_depth": "quick",
             "source_provider": "github",
             "source_repo": "kodeye-user/demo",

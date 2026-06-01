@@ -16,7 +16,7 @@ from app.models.issue import Issue
 from app.models.oauth_account import OAuthAccount
 from app.models.review import Review
 from app.models.user import User
-from app.scanners.scanner_engine import analyze_code
+from app.scanners.scanner_engine import InvalidCodeError, analyze_code
 from app.schemas.github import (
     GitHubConnectRequest,
     GitHubIssueCreateRequest,
@@ -373,7 +373,10 @@ async def scan_github_repo_file(
     """Import a GitHub file, run the scanner, persist review/issues, and return the review id."""
     _, token = _get_token_or_404(db, current_user.id)
     selected_branch, _name, language, content = await _fetch_importable_file(token, owner, repo, payload.path, payload.branch)
-    result = analyze_code(content, language)
+    try:
+        result = analyze_code(content, language)
+    except InvalidCodeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     project_name = payload.project_name or f"{owner}/{repo}"
 
     db_review = Review(

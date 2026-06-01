@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.schemas.review import ReviewRequest, ReviewResponse
-from app.scanners.scanner_engine import analyze_code
+from app.scanners.scanner_engine import InvalidCodeError, analyze_code
 from app.models.review import Review as ReviewModel
 from app.models.issue import Issue as IssueModel
 from app.models.user import User as UserModel
@@ -35,7 +35,10 @@ def analyze_review(payload: ReviewRequest, request: Request, db: Session = Depen
     if not payload.code.strip():
         raise HTTPException(status_code=400, detail="Code cannot be empty.")
 
-    result = analyze_code(payload.code, payload.language)
+    try:
+        result = analyze_code(payload.code, payload.language)
+    except InvalidCodeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     current_user = get_optional_user(request, db)
     user_id = current_user.id if current_user else None
@@ -85,4 +88,3 @@ def analyze_review(payload: ReviewRequest, request: Request, db: Session = Depen
         "source_path": payload.source_path,
         "source_url": payload.source_url,
     }
-
