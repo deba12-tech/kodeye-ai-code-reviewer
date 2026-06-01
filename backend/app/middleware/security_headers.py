@@ -7,6 +7,36 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi import Request
 from starlette.responses import Response
 
+from app.core.config import settings
+
+
+def _build_csp_policy(environment: str) -> str:
+    """Return a CSP that supports local docs without relaxing production."""
+    common_directives = (
+        "default-src 'self'; "
+        "connect-src 'self' https://accounts.google.com https://github.com; "
+        "frame-ancestors 'none'; "
+        "form-action 'self';"
+    )
+
+    if environment == "development":
+        return (
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "img-src 'self' data: https://fastapi.tiangolo.com; "
+            "font-src 'self' data: https://cdn.jsdelivr.net; "
+            f"{common_directives}"
+        )
+
+    return (
+        "script-src 'self' 'wasm-unsafe-eval'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self' data:; "
+        f"{common_directives} "
+        "upgrade-insecure-requests;"
+    )
+
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """
@@ -50,17 +80,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "max-age=31536000; includeSubDomains; preload"
             )
         
-        csp_policy = (
-            "default-src 'self'; "
-            "script-src 'self' 'wasm-unsafe-eval'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: https:; "
-            "font-src 'self' data:; "
-            "connect-src 'self' https://accounts.google.com https://github.com; "
-            "frame-ancestors 'none'; "
-            "form-action 'self'; "
-            "upgrade-insecure-requests;"
+        response.headers["Content-Security-Policy"] = _build_csp_policy(
+            settings.ENVIRONMENT
         )
-        response.headers["Content-Security-Policy"] = csp_policy
         
         return response

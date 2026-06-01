@@ -18,7 +18,10 @@ if config.config_file_name is not None:
 
 # Set the sqlalchemy.url from environment variable
 from app.core.config import settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+config.set_main_option(
+    "sqlalchemy.url",
+    settings.DATABASE_URL.replace("%", "%%")
+)
 
 from app.db.database import Base
 target_metadata = Base.metadata
