@@ -1,6 +1,12 @@
 import os
 from typing import List
+from urllib.parse import urlparse
 from pydantic_settings import BaseSettings
+
+
+def _parse_csv(value: str) -> List[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
 
 class Settings(BaseSettings):
     APP_NAME: str = "Kodeye Security Audit Engine"
@@ -57,6 +63,7 @@ class Settings(BaseSettings):
     
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
     BACKEND_URL: str = os.getenv("BACKEND_URL", "http://localhost:8000")
+    ALLOWED_HOSTS: str = os.getenv("ALLOWED_HOSTS", "")
     
     GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
     GOOGLE_CLIENT_SECRET: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
@@ -70,6 +77,23 @@ class Settings(BaseSettings):
     SENTRY_ENABLED: bool = bool(SENTRY_DSN)
     
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+
+    @property
+    def ALLOWED_HOSTS_LIST(self) -> List[str]:
+        """Get TrustedHostMiddleware hosts from env or safe local defaults."""
+        env_hosts = _parse_csv(os.getenv("ALLOWED_HOSTS", self.ALLOWED_HOSTS))
+        if env_hosts:
+            return env_hosts
+
+        hosts = ["localhost", "127.0.0.1"]
+        if self.ENVIRONMENT in ("test", "development"):
+            hosts.append("testserver")
+
+        backend_hostname = urlparse(self.BACKEND_URL).hostname
+        if self.ENVIRONMENT == "production" and backend_hostname:
+            hosts.append(backend_hostname)
+
+        return list(dict.fromkeys(hosts))
     
     class Config:
         case_sensitive = True
@@ -91,6 +115,8 @@ def validate_production_settings(config: Settings) -> None:
         raise ValueError("JWT_SECRET_KEY must be a strong production secret")
     if "*" in config.CORS_ORIGINS_LIST:
         raise ValueError("CORS_ORIGINS must not contain '*' in production")
+    if "*" in config.ALLOWED_HOSTS_LIST:
+        raise ValueError("ALLOWED_HOSTS must not contain '*' in production")
     if not config.TOKEN_ENCRYPTION_KEY:
         raise ValueError("TOKEN_ENCRYPTION_KEY is required in production")
 

@@ -50,13 +50,9 @@ app = FastAPI(
 )
 
 
-_trusted_hosts = ["127.0.0.1", "localhost", "*.kodeye.com"]
-if settings.ENVIRONMENT in ("test", "development"):
-    _trusted_hosts.append("testserver")
-
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=_trusted_hosts,
+    allowed_hosts=settings.ALLOWED_HOSTS_LIST,
 )
 
 app.add_middleware(SecurityHeadersMiddleware)
@@ -124,4 +120,3 @@ async def shutdown_event():
         "application_shutdown",
         app_name=settings.APP_NAME,
     )
-
