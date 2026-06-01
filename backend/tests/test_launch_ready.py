@@ -5,8 +5,11 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.config import validate_production_settings
+from app.models.github_integration import GithubIntegration
 from app.models.issue import Issue
+from app.models.oauth_account import OAuthAccount
 from app.models.review import Review
+from app.models.user import User
 
 
 def create_review_with_issue(db_session, user_id: int, project_name: str = "Owned Project"):
@@ -86,6 +89,73 @@ class FakeGitHubClient:
 
     async def post(self, url, headers=None, json=None):
         return FakeResponse({"html_url": "https://github.com/kodeye-user/demo/issues/1"}, status_code=201)
+
+
+class FakeGitHubOAuthClient:
+    token_payload = {"access_token": "gho_test"}
+    user_payload = {
+        "id": 12345,
+        "login": "octo-dev",
+        "email": None,
+        "name": "Octo Dev",
+        "avatar_url": "https://avatars.githubusercontent.com/u/12345",
+    }
+    emails_payload = [
+        {"email": "octo@example.com", "primary": True, "verified": True},
+    ]
+    token_status = 200
+    user_status = 200
+    emails_status = 200
+    token_headers = None
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    async def post(self, url, data=None, headers=None):
+        self.__class__.token_headers = headers
+        return FakeResponse(self.__class__.token_payload, self.__class__.token_status)
+
+    async def get(self, url, headers=None):
+        if url == "https://api.github.com/user":
+            return FakeResponse(self.__class__.user_payload, self.__class__.user_status)
+        if url == "https://api.github.com/user/emails":
+            return FakeResponse(self.__class__.emails_payload, self.__class__.emails_status)
+        return FakeResponse({}, status_code=404)
+
+
+def configure_github_oauth(monkeypatch):
+    monkeypatch.setenv("GITHUB_CLIENT_ID", "github-client")
+    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "github-secret")
+    monkeypatch.setenv("GITHUB_REDIRECT_URI", "https://kodeye-backend.onrender.com/api/v1/auth/github/callback")
+    monkeypatch.setenv("FRONTEND_URL", "https://kodeye.vercel.app")
+    monkeypatch.setenv("BACKEND_URL", "https://kodeye-backend.onrender.com")
+
+
+def patch_github_oauth_client(monkeypatch, token_payload=None, user_payload=None, emails_payload=None):
+    import app.api.auth as auth_api
+
+    FakeGitHubOAuthClient.token_payload = {"access_token": "gho_test"} if token_payload is None else token_payload
+    FakeGitHubOAuthClient.user_payload = {
+        "id": 12345,
+        "login": "octo-dev",
+        "email": None,
+        "name": "Octo Dev",
+        "avatar_url": "https://avatars.githubusercontent.com/u/12345",
+    } if user_payload is None else user_payload
+    FakeGitHubOAuthClient.emails_payload = [
+        {"email": "octo@example.com", "primary": True, "verified": True},
+    ] if emails_payload is None else emails_payload
+    FakeGitHubOAuthClient.token_status = 200
+    FakeGitHubOAuthClient.user_status = 200
+    FakeGitHubOAuthClient.emails_status = 200
+    FakeGitHubOAuthClient.token_headers = None
+    monkeypatch.setattr(auth_api.httpx, "AsyncClient", FakeGitHubOAuthClient)
 
 
 @pytest.mark.integration
@@ -187,6 +257,92 @@ def test_github_oauth_login_requests_repo_import_scopes(client, monkeypatch):
     assert response.status_code == 307
     location = response.headers["location"]
     assert "scope=read%3Auser%20user%3Aemail%20repo" in location
+
+
+def test_github_oauth_callback_rejects_string_token_response(client, monkeypatch):
+    configure_github_oauth(monkeypatch)
+    patch_github_oauth_client(monkeypatch, token_payload="access_token=gho_test")
+
+    response = client.get("/api/v1/auth/github/callback?code=abc", follow_redirects=False)
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "GitHub authentication failed. Please try again."
+    assert FakeGitHubOAuthClient.token_headers == {"Accept": "application/json"}
+
+
+def test_github_oauth_callback_rejects_error_token_response(client, monkeypatch):
+    configure_github_oauth(monkeypatch)
+    patch_github_oauth_client(
+        monkeypatch,
+        token_payload={"error": "bad_verification_code", "error_description": "The code passed is incorrect."},
+    )
+
+    response = client.get("/api/v1/auth/github/callback?code=bad", follow_redirects=False)
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "GitHub authentication failed. Please try again."
+
+
+def test_github_oauth_callback_rejects_invalid_user_response_type(client, monkeypatch):
+    configure_github_oauth(monkeypatch)
+    patch_github_oauth_client(monkeypatch, user_payload="not-a-user-object")
+
+    response = client.get("/api/v1/auth/github/callback?code=abc", follow_redirects=False)
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "GitHub authentication failed. Please try again."
+
+
+def test_github_oauth_callback_uses_verified_email_endpoint(client, db_session, monkeypatch):
+    configure_github_oauth(monkeypatch)
+    patch_github_oauth_client(
+        monkeypatch,
+        user_payload={
+            "id": 98765,
+            "login": "verified-octo",
+            "email": None,
+            "name": None,
+            "avatar_url": "https://avatars.githubusercontent.com/u/98765",
+        },
+        emails_payload=[
+            {"email": "unverified@example.com", "primary": True, "verified": False},
+            {"email": "verified-octo@example.com", "primary": True, "verified": True},
+        ],
+    )
+
+    response = client.get("/api/v1/auth/github/callback?code=abc", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"].startswith("https://kodeye.vercel.app/auth/callback?")
+    user = db_session.query(User).filter(User.email == "verified-octo@example.com").first()
+    assert user is not None
+    assert user.auth_provider == "github"
+    oauth_account = db_session.query(OAuthAccount).filter(
+        OAuthAccount.user_id == user.id,
+        OAuthAccount.provider == "github",
+    ).first()
+    assert oauth_account is not None
+    integration = db_session.query(GithubIntegration).filter(GithubIntegration.user_id == user.id).first()
+    assert integration is not None
+    assert integration.github_username == "verified-octo"
+
+
+def test_github_oauth_callback_rejects_no_verified_email(client, monkeypatch):
+    configure_github_oauth(monkeypatch)
+    patch_github_oauth_client(
+        monkeypatch,
+        user_payload={"id": 54321, "login": "no-email", "email": None, "name": None, "avatar_url": None},
+        emails_payload=[
+            {"email": "private@example.com", "primary": True, "verified": False},
+        ],
+    )
+
+    response = client.get("/api/v1/auth/github/callback?code=abc", follow_redirects=False)
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "GitHub account has no verified public email. Please add a verified email to GitHub or use email login."
+    )
 
 
 def test_production_config_validation_rejects_unsafe_values():

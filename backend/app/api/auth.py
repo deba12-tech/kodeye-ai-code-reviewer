@@ -1,4 +1,5 @@
 import os
+import logging
 from typing import List
 from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -28,8 +29,14 @@ from app.schemas.auth import (
 from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+logger = logging.getLogger("kodeye.auth.oauth")
 
 security_scheme = HTTPBearer(auto_error=False)
+
+GITHUB_AUTH_FAILED_DETAIL = "GitHub authentication failed. Please try again."
+GITHUB_NO_VERIFIED_EMAIL_DETAIL = (
+    "GitHub account has no verified public email. Please add a verified email to GitHub or use email login."
+)
 
 
 def _versioned_oauth_redirect_uri(provider: str) -> str:
@@ -41,6 +48,67 @@ def _versioned_oauth_redirect_uri(provider: str) -> str:
     if "/api/v1/auth/" not in redirect_uri:
         redirect_uri = redirect_uri.replace("/auth/", "/api/v1/auth/")
     return redirect_uri
+
+
+def _parse_json_response(response: httpx.Response, provider: str, step: str, expected_type: type):
+    """Safely parse OAuth provider JSON without logging secrets."""
+    logger.info(
+        "%s_oauth_response",
+        provider,
+        extra={"step": step, "status_code": response.status_code},
+    )
+    if response.status_code >= 400:
+        logger.warning(
+            "%s_oauth_http_error",
+            provider,
+            extra={"step": step, "status_code": response.status_code},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=GITHUB_AUTH_FAILED_DETAIL if provider == "github" else f"{provider.title()} Authentication failed",
+        )
+
+    try:
+        payload = response.json()
+    except Exception:
+        logger.warning(
+            "%s_oauth_invalid_json",
+            provider,
+            extra={"step": step, "status_code": response.status_code},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=GITHUB_AUTH_FAILED_DETAIL if provider == "github" else f"{provider.title()} Authentication failed",
+        )
+
+    if not isinstance(payload, expected_type):
+        logger.warning(
+            "%s_oauth_invalid_payload_type",
+            provider,
+            extra={
+                "step": step,
+                "status_code": response.status_code,
+                "payload_type": type(payload).__name__,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=GITHUB_AUTH_FAILED_DETAIL if provider == "github" else f"{provider.title()} Authentication failed",
+        )
+    return payload
+
+
+def _extract_verified_github_email(emails: list) -> str | None:
+    for item in emails:
+        if not isinstance(item, dict):
+            logger.warning(
+                "github_oauth_invalid_email_item",
+                extra={"payload_type": type(item).__name__},
+            )
+            continue
+        if item.get("primary") is True and item.get("verified") is True and item.get("email"):
+            return str(item["email"])
+    return None
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
@@ -343,7 +411,7 @@ async def github_callback(code: str, request: Request, db: Session = Depends(get
     redirect_uri = _versioned_oauth_redirect_uri("github")
     
     profile = None
-    access_token = "mock_github_access_token"
+    access_token = None
     
     if not client_id or not client_secret:
         raise HTTPException(
@@ -352,62 +420,80 @@ async def github_callback(code: str, request: Request, db: Session = Depends(get
         )
     else:
         async with httpx.AsyncClient() as client:
-            try:
-                token_res = await client.post(
-                    "https://github.com/login/oauth/access_token",
-                    data={
-                        "client_id": client_id,
-                        "client_secret": client_secret,
-                        "code": code,
-                        "redirect_uri": redirect_uri,
-                    },
-                    headers={"Accept": "application/json"}
+            token_res = await client.post(
+                "https://github.com/login/oauth/access_token",
+                data={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                },
+                headers={"Accept": "application/json"},
+            )
+            token_data = _parse_json_response(token_res, "github", "token", dict)
+            if token_data.get("error"):
+                logger.warning(
+                    "github_oauth_token_error",
+                    extra={"error": token_data.get("error"), "status_code": token_res.status_code},
                 )
-                token_data = token_res.json()
-                access_token = token_data.get("access_token")
-                
-                profile_res = await client.get(
-                    "https://api.github.com/user",
-                    headers={
-                        "Authorization": f"Bearer {access_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    }
-                )
-                profile_data = profile_res.json()
-                
-                email_res = await client.get(
-                    "https://api.github.com/user/emails",
-                    headers={
-                        "Authorization": f"Bearer {access_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    }
-                )
-                emails_list = email_res.json()
-                primary_email = None
-                for em in emails_list:
-                    if em.get("primary"):
-                        primary_email = em.get("email")
-                        break
-                
-                profile = {
-                    "id": str(profile_data.get("id")),
-                    "login": profile_data.get("login"),
-                    "email": primary_email or profile_data.get("email"),
-                    "name": profile_data.get("name") or profile_data.get("login"),
-                    "avatar_url": profile_data.get("avatar_url")
-                }
-            except Exception as e:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"GitHub Authentication failed: {str(e)}"
+                    detail=GITHUB_AUTH_FAILED_DETAIL,
                 )
+
+            access_token = token_data.get("access_token")
+            if not access_token:
+                logger.warning(
+                    "github_oauth_missing_access_token",
+                    extra={"status_code": token_res.status_code},
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=GITHUB_AUTH_FAILED_DETAIL,
+                )
+
+            github_headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            }
+
+            profile_res = await client.get(
+                "https://api.github.com/user",
+                headers=github_headers,
+            )
+            profile_data = _parse_json_response(profile_res, "github", "user", dict)
+            if not profile_data.get("id") or not profile_data.get("login"):
+                logger.warning(
+                    "github_oauth_missing_required_user_fields",
+                    extra={"status_code": profile_res.status_code},
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=GITHUB_AUTH_FAILED_DETAIL,
+                )
+
+            email = profile_data.get("email")
+            if not email:
+                email_res = await client.get(
+                    "https://api.github.com/user/emails",
+                    headers=github_headers,
+                )
+                emails_list = _parse_json_response(email_res, "github", "emails", list)
+                email = _extract_verified_github_email(emails_list)
+
+            profile = {
+                "id": str(profile_data["id"]),
+                "login": profile_data["login"],
+                "email": email,
+                "name": profile_data.get("name") or profile_data["login"],
+                "avatar_url": profile_data.get("avatar_url"),
+            }
                 
     if not profile or not profile.get("email"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Failed to retrieve primary verified email from GitHub profile"
+            detail=GITHUB_NO_VERIFIED_EMAIL_DETAIL,
         )
         
     email = profile["email"].lower().strip()
